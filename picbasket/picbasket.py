@@ -174,6 +174,7 @@ def migrate(config, db):
     RETURNS:
     - newdb : the resolved image database dict (with no duplicates)
     CALLBACKS: (keys)
+    - on_copied (src, dst)
     - on_migrated (db)
     """
     os.makedirs(os.path.abspath(config['output']), mode=0o755, exist_ok=True)
@@ -183,6 +184,7 @@ def migrate(config, db):
             for src, dst in _resolve(config, imgs, h, newdb):
                 try:
                    pool.apply_async(_copy, (src, dst, config['delete_input'],)).get(timeout=10000)
+                   _callback('on_copied', src=src, dst=dst)
                 except TimeoutError:
                    _callback('warning', msg="Timeout copying file {} to {}".format(src, dst))
     _callback('on_migrated', db=newdb)
@@ -287,8 +289,6 @@ def _copy(src, dst, removesrc):
     - src : image file path from one of the input directories
     - dst : image file path to be created or updated in the output directory
     - removesrc : flag informing us we should delete the image file from the input directory after it has been moved to the output directory
-    CALLBACKS: (keys)
-    - on_copied (src, dst)
     """
     try:
         os.makedirs(os.path.dirname(dst), exist_ok=True)
@@ -296,7 +296,6 @@ def _copy(src, dst, removesrc):
             shutil.move(src, dst)
         else:
             shutil.copy2(src, dst)
-        _callback('on_copied', src=src, dst=dst)
     except:
         _callback('warning', msg="Failed to copy {} to {}".format(src, dst))
 
