@@ -5,6 +5,16 @@ import argparse
 from . import picbasket as pb
 
 def main():
+    # Register callbacks to picbasket module
+    pb.callback = {
+        'warning': on_warning,
+        'on_hashed': on_hashed,
+        'on_copied': on_copied,
+        'on_migrated': on_migrated,
+        'on_found_cfgfile': on_found_cfgfile,
+        'on_load_cfgfile': on_load_cfgfile
+    }
+    # Parse command line arguments
     parser = argparse.ArgumentParser(description='TODO')
     parser.add_argument('dirs', nargs='*', help='Directories to search for images')
     parser.add_argument('-c', '--config', type=str, help='Configuration file')
@@ -13,6 +23,7 @@ def main():
     parser.add_argument('--persist-input', action='store_true', help='Save input directories to configuration so that they are always indexed')
     parser.add_argument('--delete-input', action='store_true', help='Delete input files after copying to output directory')
     args = parser.parse_args()
+    # Read and initialize configuration
     if args.config:
         cfgfile = os.path.abspath(args.config)
     elif args.output:
@@ -24,15 +35,16 @@ def main():
         error('No input directory given')
     if config['output'] == '':
         error('No output directory given')
-    # Load, discover, migrate and save
+    # Main flow
     db = pb.load_db(config)
     pb.discover(config, db)
-    import pprint as pp # temporary
-    pp.pprint(db) # temporary
     db = pb.migrate(config, db)
-    pp.pprint(db) # temporary
     pb.save_db(config, db)
     pb.save_config(config)
+
+#
+# Subroutines
+#
 
 def error(*msg):
     print('Error:', *msg, file=sys.stderr)
@@ -43,3 +55,30 @@ def warn(*msg):
 
 def info(*msg):
     print('Info:', *msg)
+
+#
+# Callback functions
+#
+
+def on_warning(**kwargs): # msg
+    warn(kwargs['msg'])
+
+hashct = 0
+def on_hashed(**kwargs): # hash, path, res, ts, ct, dup
+    global hashct
+    hashct += 1
+
+copyct = 0
+def on_copied(**kwargs): # src, dst
+    global copyct
+    copyct += 1
+
+def on_migrated(**kwargs): # db
+    finalct = len(kwargs['db'])
+    info('Processed {} images; saved {}, copied {}'.format(hashct, finalct, copyct))
+
+def on_found_cfgfile(**kwargs): # cfgfile
+    info('Found configuration file:', kwargs['cfgfile'])
+
+def on_load_cfgfile(**kwargs): # cfgfile
+    info('Loaded configuration from file:', kwargs['cfgfile'])

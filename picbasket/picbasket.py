@@ -20,12 +20,31 @@ import exifread
 
 # See cli.py for example of how to use these APIs together
 
+callback = {}
+"""
+Register a callback function by writing to this dict at one of the following keys:
+- warning (msg)
+- on_load_cfgfile (cfgfile)
+- on_load_config (config)
+- on_found_cfgfile (cfgfile)
+- on_saved_config (cfgfile)
+- on_load_db (db)
+- on_save_db (dbfile)
+- on_hashed (hash, path, res, ts, ct, dup)
+- on_migrated (db)
+- on_copied (src, dst)
+The callback function will be provided with the keyword args shown in parentheses.
+"""
+
 def load_config(cfgfile, args):
     """
     Loads and outputs config dict
     ARGUMENTS:
     - cfgfile : (Optional) path to configuration file
     - args : (Optional) argparse object
+    CALLBACKS: (keys)
+    - on_load_cfgfile (cfgfile)
+    - on_load_config (config)
     """
     # Defaults
     config = {
@@ -39,7 +58,7 @@ def load_config(cfgfile, args):
     }
     # Override defaults with config file settings
     if cfgfile and os.path.exists(cfgfile):
-        info('Loading configuration from', cfgfile)
+        _callback('on_load_cfgfile', cfgfile=cfgfile)
         with open(cfgfile, 'r') as fd:
             config.update(json.load(fd))
     # Override or append config file settings with CLI arguments
@@ -50,6 +69,7 @@ def load_config(cfgfile, args):
         config['threads'] = args.threads
         config['persist_input'] = args.persist_input
         config['delete_input'] = args.delete_input
+    _callback('on_load_config', config=config)
     return config
 
 def get_config(outdir):
@@ -57,9 +77,12 @@ def get_config(outdir):
     Returns the configuration file path (if it exists) from an output directory path
     ARGUMENTS:
     - outdir : output directory path
+    CALLBACKS: (keys)
+    - on_found_cfgfile (cfgfile)
     """
     f = os.path.join(os.path.abspath(outdir), '.picbasket.cfg')
     if os.path.exists(f):
+        _callback('on_found_cfgfile', cfgfile=f)
         return f
     return ''
 
@@ -68,6 +91,8 @@ def save_config(config):
     Saves config dict to the output directory
     ARGUMENTS:
     - config : the config dict
+    CALLBACKS: (keys)
+    - on_saved_config (cfgfile)
     """
     f = os.path.join(os.path.abspath(config['output']), '.picbasket.cfg')
     # Don't store certain non-persistent settings, e.g. threads as it's machine dependent
@@ -78,17 +103,22 @@ def save_config(config):
         persistent_config.pop('inputs', None)
     with open(f, 'w', encoding='utf-8') as fd:
         json.dump(persistent_config, fd, ensure_ascii=False, indent=4)
+    _callback('on_saved_config', cfgfile=f)
 
 def load_db(config):
     """
     Loads the pickled image database from the output directory and returns the unpickled dict
     ARGUMENTS:
     - config : the config dict
+    CALLBACKS: (keys)
+    - on_load_db (db)
     """
     f = os.path.join(os.path.abspath(config['output']), '.picbasket.db')
     if os.path.exists(f):
         with open(f, 'rb') as fd:
-            return pickle.load(fd)
+            db = pickle.load(fd)
+            _callback('on_load_db', db=db)
+            return db
     else:
         return defaultdict(list)
 
@@ -98,10 +128,13 @@ def save_db(config, db):
     ARGUMENTS:
     - config : the config dict
     - db : the image database dict
+    CALLBACKS: (keys)
+    - on_save_db (dbfile)
     """
     f = os.path.join(os.path.abspath(config['output']), '.picbasket.db')
     with open(f, 'wb') as fd:
         pickle.dump(db, fd)
+    _callback('on_save_db', dbfile=f)
 
 def discover(config, db):
     """
@@ -109,22 +142,27 @@ def discover(config, db):
     ARGUMENTS:
     - config : the config dict
     - db : the image database dict (to be populated by this function)
+    CALLBACKS: (keys)
+    - on_hashed (hash, path, res, ts, ct, dup)
     """
     with Pool(processes=config['threads']) as pool:
         for d in config['inputs']:
             p = os.path.abspath(d)
             if not os.path.isdir(p):
                 continue
+            ct = 0
             for root, dirs, files in os.walk(p):
                 for base in files:
                     f = os.path.join(root, base)
                     try:
                         h, res, ts = pool.apply_async(_hash_img, (f,)).get(timeout=1000)
                     except TimeoutError:
-                        warn('Timeout hashing file', f)
+                        _callback('warning', msg="Timeout hashing file {}".format(f))
                         continue
                     if h:
                         db[h].append([f, res, ts])
+                        ct += 1
+                        _callback('on_hashed', hash=h, path=f, res=res, ts=ts, ct=ct, dup=len(db[h]))
 
 def migrate(config, db):
     """
@@ -135,6 +173,8 @@ def migrate(config, db):
     - db : the unresolved image database dict (potentially with duplicates)
     RETURNS:
     - newdb : the resolved image database dict (with no duplicates)
+    CALLBACKS: (keys)
+    - on_migrated (db)
     """
     os.makedirs(os.path.abspath(config['output']), mode=0o755, exist_ok=True)
     newdb = defaultdict(list)
@@ -144,23 +184,13 @@ def migrate(config, db):
                 try:
                    pool.apply_async(_copy, (src, dst, config['delete_input'],)).get(timeout=10000)
                 except TimeoutError:
-                   warn('Timeout copying file', src, 'to', dst)
+                   _callback('warning', msg="Timeout copying file {} to {}".format(src, dst))
+    _callback('on_migrated', db=newdb)
     return newdb
 
 ###
 ### Internal methods
 ###
-
-### TODO: deprecate these in favor of callback-style logging API
-def error(*msg):
-    print('Error:', *msg, file=sys.stderr)
-    exit(1)
-
-def warn(*msg):
-    print('Warning:', *msg, file=sys.stderr)
-
-def info(*msg):
-    print('Info:', *msg)
 
 def _get_timestamp(fd, f):
     """
@@ -257,6 +287,8 @@ def _copy(src, dst, removesrc):
     - src : image file path from one of the input directories
     - dst : image file path to be created or updated in the output directory
     - removesrc : flag informing us we should delete the image file from the input directory after it has been moved to the output directory
+    CALLBACKS: (keys)
+    - on_copied (src, dst)
     """
     try:
         os.makedirs(os.path.dirname(dst), exist_ok=True)
@@ -264,5 +296,16 @@ def _copy(src, dst, removesrc):
             shutil.move(src, dst)
         else:
             shutil.copy2(src, dst)
+        _callback('on_copied', src=src, dst=dst)
     except:
-        warn('Failed to copy', src, 'to', dst)
+        _callback('warning', msg="Failed to copy {} to {}".format(src, dst))
+
+def _callback(event, **kwargs):
+    """
+    On event, calls callback function specified by client
+    ARGUMENTS:
+    - event : event key
+    - kwargs : vent-specific keyword args
+    """
+    if event in callback:
+        callback[event](**kwargs)
