@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 from multiprocessing import cpu_count
 import argparse
 from . import picbasket as pb
@@ -56,6 +57,9 @@ def warn(*msg):
 def info(*msg):
     print('Info:', *msg)
 
+def statline(*msg):
+    print(*msg, end='\r')
+
 #
 # Callback functions
 #
@@ -63,10 +67,15 @@ def info(*msg):
 def on_warning(**kwargs): # msg
     warn(kwargs['msg'])
 
+starttime = time.time()
 hashct = 0
 def on_hashed(**kwargs): # hash, path, res, ts, ct, dup
     global hashct
     hashct += 1
+    global starttime
+    speed = (time.time() - starttime) / hashct
+    path = ('..' + kwargs['path'][38:]) if len(kwargs['path']) > 40 else kwargs['path']
+    statline('{:<40} {:6.2f} msec/img, processed {:<8d}'.format(path, speed, kwargs['ct']))
 
 copyct = 0
 def on_copied(**kwargs): # src, dst
@@ -75,7 +84,7 @@ def on_copied(**kwargs): # src, dst
 
 def on_migrated(**kwargs): # db
     finalct = len(kwargs['db'])
-    info('Processed {} images; saved {}, copied {}'.format(hashct, finalct, copyct))
+    info('Processed {} images; stored {}, copied {}'.format(hashct, finalct, copyct))
 
 def on_found_cfgfile(**kwargs): # cfgfile
     info('Found configuration file:', kwargs['cfgfile'])
